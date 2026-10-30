@@ -1,0 +1,307 @@
+{
+  "entities": {
+    "UserWorkspace": {
+      "title": "UserWorkspace",
+      "description": "Public/non-PII workspace state for a researcher or NGO user, storing saved shortlist IDs, unlocked blueprints, paid tier flags, and non-PII digest filters.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the workspace owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name of the researcher.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "proUnlocked": {
+          "type": "boolean",
+          "description": "Whether the All-Access Pro Tier ($15/mo) is active."
+        },
+        "csvAndAnalyticsUnlocked": {
+          "type": "boolean",
+          "description": "Whether the CSV & Analytics Export Pass ($3) is unlocked."
+        },
+        "complianceCredits": {
+          "type": "number",
+          "description": "Remaining single Proposal Rubric Audit credits."
+        },
+        "savedIds": {
+          "type": "array",
+          "description": "Bounded list of shortlisted grant opportunity IDs (max 50)."
+        },
+        "unlockedBlueprints": {
+          "type": "array",
+          "description": "Bounded list of unlocked Academy blueprint IDs (max 20)."
+        },
+        "digestCadence": {
+          "type": "string",
+          "description": "Selected dispatch cadence for spatial grant digests.",
+          "enum": ["Weekly", "Bi-Weekly", "Urgent-Only"],
+          "maxLength": 20
+        },
+        "digestRegion": {
+          "type": "string",
+          "description": "Target region filter for spatial grant digests.",
+          "maxLength": 40
+        },
+        "digestSubject": {
+          "type": "string",
+          "description": "Target discipline filter for spatial grant digests.",
+          "maxLength": 60
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the workspace was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the workspace was last updated."
+        }
+      },
+      "required": [
+        "ownerId",
+        "displayName",
+        "proUnlocked",
+        "csvAndAnalyticsUnlocked",
+        "complianceCredits",
+        "savedIds",
+        "unlockedBlueprints",
+        "digestCadence",
+        "digestRegion",
+        "digestSubject",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII document under the Split Collection strategy storing the user's institutional email and subscriber email.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Authenticated user email address.",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "subscriberEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Institutional email subscribed to AI Digest Alerts.",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the private record was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the private record was last updated."
+        }
+      },
+      "required": [
+        "ownerId",
+        "email",
+        "subscriberEmail",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserOpportunity": {
+      "title": "UserOpportunity",
+      "description": "Custom grant opportunity submitted or live-surveyed by an authenticated user.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user who indexed the opportunity.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "description": "Grant opportunity title.",
+          "minLength": 2,
+          "maxLength": 200
+        },
+        "provider": {
+          "type": "string",
+          "description": "Donor agency or institution name.",
+          "minLength": 2,
+          "maxLength": 160
+        },
+        "url": {
+          "type": "string",
+          "description": "Official verified donor portal URL.",
+          "minLength": 8,
+          "maxLength": 500
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["USD", "EUR", "GBP"],
+          "maxLength": 10
+        },
+        "amount": {
+          "type": "number",
+          "description": "Grant award value in original currency."
+        },
+        "region": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "locationLabel": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "stage": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "subject": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Open", "Closing Soon", "Expired"],
+          "maxLength": 20
+        },
+        "deadline": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "overheadCapPercent": {
+          "type": "number"
+        },
+        "lat": {
+          "type": "number"
+        },
+        "lng": {
+          "type": "number"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "title",
+        "provider",
+        "url",
+        "currency",
+        "amount",
+        "region",
+        "locationLabel",
+        "stage",
+        "subject",
+        "status",
+        "deadline",
+        "overheadCapPercent",
+        "lat",
+        "lng",
+        "notes",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PaymentReceiptRecord": {
+      "title": "PaymentReceiptRecord",
+      "description": "Verified billing receipt for Pro Tier or micro-pass unlocks via USDC, Payoneer, or Card.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "planLabel": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "amountLabel": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 30
+        },
+        "method": {
+          "type": "string",
+          "enum": ["Payoneer", "Card", "USDC"],
+          "maxLength": 20
+        },
+        "timestamp": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "planLabel",
+        "amountLabel",
+        "method",
+        "timestamp",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserWorkspace"
+      },
+      "description": "Stores each authenticated user's non-PII workspace state, shortlist, unlocked blueprints, and paid tier flags."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": {
+        "$ref": "#/entities/UserPrivateInfo"
+      },
+      "description": "Isolated PII subcollection storing the user's institutional email and digest subscriber email."
+    },
+    "/userOpportunities/{opportunityId}": {
+      "schema": {
+        "$ref": "#/entities/UserOpportunity"
+      },
+      "description": "Stores custom grant opportunities submitted or live-surveyed by authenticated users."
+    },
+    "/paymentReceipts/{receiptId}": {
+      "schema": {
+        "$ref": "#/entities/PaymentReceiptRecord"
+      },
+      "description": "Stores immutable billing receipts for Pro Tier and micro-pass purchases by authenticated users."
+    }
+  }
+}

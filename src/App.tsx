@@ -26,6 +26,28 @@ import {
 } from './data/grantData';
 import { GaiaGlobe } from './components/GaiaGlobe';
 import { SpatialWorldMap } from './components/SpatialWorldMap';
+import {
+  auth,
+  clampString,
+  collection,
+  db,
+  doc,
+  getDoc,
+  googleProvider,
+  handleFirestoreError,
+  onAuthStateChanged,
+  onSnapshot,
+  OperationType,
+  query,
+  sanitizeValidId,
+  serverTimestamp,
+  setDoc,
+  signInWithPopup,
+  signOut,
+  updateDoc,
+  User,
+  where,
+} from './firebase';
 
 type ActiveTab = 'dashboard' | 'map' | 'compliance' | 'academy' | 'sites' | 'email';
 type PaidPlanId = 'pro_monthly' | 'csv_pass' | 'audit_pass' | 'blueprint_pass';
@@ -78,7 +100,13 @@ export default function App() {
   const [langMenuOpen, setLangMenuOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
 
+  // Firebase Auth & Cloud Sync State
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
+
   // Opportunities State
+  const [customOpportunities, setCustomOpportunities] = useState<GrantOpportunity[]>([]);
   const [opportunities, setOpportunities] = useState<GrantOpportunity[]>(() => {
     const saved = localStorage.getItem('grantscout_opportunities');
     if (saved) {
@@ -260,17 +288,285 @@ export default function App() {
     pushToast('Filters Reset', 'Showing all verified global funding opportunities.', 'teal');
   };
 
-  const toggleSaveOpportunity = (id: string) => {
-    setSavedIds((prev) => {
-      const exists = prev.includes(id);
-      const next = exists ? prev.filter((item) => item !== id) : [...prev, id];
+  // Firebase Auth Listener & Initial Workspace Provisioning
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+      setAuthReady(true);
+
+      if (user) {
+        const uid = sanitizeValidId(user.uid);
+        const userDocPath = `users/${uid}`;
+        const privateDocPath = `users/${uid}/private/info`;
+
+        try {
+          const userRef = doc(db, 'users', uid);
+          const snap = await getDoc(userRef);
+
+          if (!snap.exists()) {
+            await setDoc(userRef, {
+              ownerId: uid,
+              displayName: clampString(user.displayName || 'Researcher', 1, 120, 'Researcher'),
+              proUnlocked: false,
+              csvAndAnalyticsUnlocked: false,
+              complianceCredits: 0,
+              savedIds: [],
+              unlockedBlueprints: ['guide-1'],
+              digestCadence: 'Weekly',
+              digestRegion: 'ALL',
+              digestSubject: 'ALL',
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, userDocPath);
+        }
+
+        try {
+          const privRef = doc(db, 'users', uid, 'private', 'info');
+          const privSnap = await getDoc(privRef);
+          if (!privSnap.exists()) {
+            const safeEmail = clampString(
+              user.email || 'researcher@university.edu',
+              3,
+              254,
+              'researcher@university.edu'
+            );
+            await setDoc(privRef, {
+              ownerId: uid,
+              email: safeEmail,
+              subscriberEmail: safeEmail,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, privateDocPath);
+        }
+      } else {
+        setCustomOpportunities([]);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Real-Time Firestore Listeners when Authenticated
+  useEffect(() => {
+    if (!authReady || !currentUser) return;
+
+    const uid = sanitizeValidId(currentUser.uid);
+    const userDocPath = `users/${uid}`;
+    const privateDocPath = `users/${uid}/private/info`;
+    const oppsPath = 'userOpportunities';
+    const receiptsPath = 'paymentReceipts';
+
+    const unsubWorkspace = onSnapshot(
+      doc(db, 'users', uid),
+      (snap) => {
+        if (!snap.exists()) return;
+        const data = snap.data();
+        if (typeof data.proUnlocked === 'boolean') setProUnlocked(data.proUnlocked);
+        setUnlockedPasses({
+          csvAndAnalytics: Boolean(data.csvAndAnalyticsUnlocked),
+          complianceCredits: Number(data.complianceCredits) || 0,
+        });
+        if (Array.isArray(data.savedIds)) setSavedIds(data.savedIds);
+        if (Array.isArray(data.unlockedBlueprints)) setUnlockedBlueprints(data.unlockedBlueprints);
+        if (
+          data.digestCadence === 'Weekly' ||
+          data.digestCadence === 'Bi-Weekly' ||
+          data.digestCadence === 'Urgent-Only'
+        ) {
+          setDigestCadence(data.digestCadence);
+        }
+        if (data.digestRegion) setDigestRegion(data.digestRegion as RegionScope);
+        if (data.digestSubject) setDigestSubject(data.digestSubject as SubjectCategory);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.GET, userDocPath);
+      }
+    );
+
+    const unsubPrivate = onSnapshot(
+      doc(db, 'users', uid, 'private', 'info'),
+      (snap) => {
+        if (!snap.exists()) return;
+        const data = snap.data();
+        if (typeof data.subscriberEmail === 'string' && data.subscriberEmail) {
+          setSubscriberEmail(data.subscriberEmail);
+        }
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.GET, privateDocPath);
+      }
+    );
+
+    const oppsQuery = query(collection(db, oppsPath), where('ownerId', '==', uid));
+    const unsubOpps = onSnapshot(
+      oppsQuery,
+      (snap) => {
+        const loaded: GrantOpportunity[] = snap.docs.map((d) => {
+          const item = d.data();
+          return {
+            id: d.id,
+            title: item.title,
+            provider: item.provider,
+            url: item.url,
+            currency: item.currency,
+            amount: item.amount,
+            region: item.region,
+            locationLabel: item.locationLabel,
+            stage: item.stage,
+            subject: item.subject,
+            status: item.status,
+            deadline: item.deadline,
+            overheadCapPercent: item.overheadCapPercent,
+            lat: item.lat,
+            lng: item.lng,
+            notes: item.notes,
+            eligibilityChecklist: [
+              'Official direct donor link verified via Firebase Cloud Radar',
+              `Overhead cap <= ${item.overheadCapPercent}%`,
+            ],
+          };
+        });
+        setCustomOpportunities(loaded);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, oppsPath);
+      }
+    );
+
+    const receiptsQuery = query(collection(db, receiptsPath), where('ownerId', '==', uid));
+    const unsubReceipts = onSnapshot(
+      receiptsQuery,
+      (snap) => {
+        const loadedReceipts: PaymentReceipt[] = snap.docs.map((d) => {
+          const r = d.data();
+          return {
+            id: d.id,
+            planLabel: r.planLabel,
+            amountLabel: r.amountLabel,
+            method: r.method,
+            timestamp: r.timestamp,
+          };
+        });
+        setPaymentReceipts(loadedReceipts);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, receiptsPath);
+      }
+    );
+
+    return () => {
+      unsubWorkspace();
+      unsubPrivate();
+      unsubOpps();
+      unsubReceipts();
+    };
+  }, [authReady, currentUser]);
+
+  // Merge user's Firestore custom opportunities with verified default opportunities
+  useEffect(() => {
+    if (customOpportunities.length === 0) return;
+    setOpportunities((prev) => {
+      const existingIds = new Set(customOpportunities.map((o) => o.id));
+      const base = prev.filter((o) => !existingIds.has(o.id));
+      return [...customOpportunities, ...base];
+    });
+  }, [customOpportunities]);
+
+  // Sync workspace updates to Firestore if signed in
+  const syncWorkspaceState = async (
+    overrides: Partial<{
+      proUnlocked: boolean;
+      csvAndAnalyticsUnlocked: boolean;
+      complianceCredits: number;
+      savedIds: string[];
+      unlockedBlueprints: string[];
+      digestCadence: 'Weekly' | 'Bi-Weekly' | 'Urgent-Only';
+      digestRegion: RegionScope;
+      digestSubject: SubjectCategory;
+    }>
+  ) => {
+    if (!currentUser) return;
+    const uid = sanitizeValidId(currentUser.uid);
+    const userDocPath = `users/${uid}`;
+    const safeSaved = (overrides.savedIds ?? savedIds)
+      .slice(0, 50)
+      .map((s) => clampString(String(s), 1, 128, 'opp-1'));
+    const safeBlueprints = (overrides.unlockedBlueprints ?? unlockedBlueprints)
+      .slice(0, 20)
+      .map((b) => clampString(String(b), 1, 128, 'guide-1'));
+
+    try {
+      await updateDoc(doc(db, 'users', uid), {
+        displayName: clampString(currentUser.displayName || 'Researcher', 1, 120, 'Researcher'),
+        proUnlocked: overrides.proUnlocked ?? proUnlocked,
+        csvAndAnalyticsUnlocked:
+          overrides.csvAndAnalyticsUnlocked ?? unlockedPasses.csvAndAnalytics,
+        complianceCredits: Math.max(
+          0,
+          Math.min(10000, overrides.complianceCredits ?? unlockedPasses.complianceCredits)
+        ),
+        savedIds: safeSaved,
+        unlockedBlueprints: safeBlueprints,
+        digestCadence: overrides.digestCadence ?? digestCadence,
+        digestRegion: clampString(overrides.digestRegion ?? digestRegion, 1, 40, 'ALL'),
+        digestSubject: clampString(overrides.digestSubject ?? digestSubject, 1, 60, 'ALL'),
+        updatedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, userDocPath);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    if (signingIn) return;
+    setSigningIn(true);
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
       pushToast(
-        exists ? 'Removed from Shortlist' : 'Saved to Shortlist',
-        exists ? 'Grant removed from your saved calls.' : 'Grant added to your saved calls.',
+        'Cloud Sync Active',
+        `Signed in as ${result.user.displayName || result.user.email}. Your shortlist, portals & Pro passes are synced to Firestore.`,
         'emerald'
       );
-      return next;
-    });
+    } catch (err: any) {
+      pushToast(
+        'Sign-In Notice',
+        err?.message || 'Could not complete Google Sign-In popup.',
+        'amber'
+      );
+    } finally {
+      setSigningIn(false);
+    }
+  };
+
+  const handleGoogleSignOut = async () => {
+    try {
+      await signOut(auth);
+      pushToast('Signed Out', 'Switched back to local browser session.', 'teal');
+    } catch (err: any) {
+      pushToast('Sign-Out Alert', err?.message || 'Error signing out.', 'amber');
+    }
+  };
+
+  const toggleSaveOpportunity = (id: string) => {
+    const exists = savedIds.includes(id);
+    const next = exists ? savedIds.filter((item) => item !== id) : [...savedIds, id].slice(0, 50);
+    setSavedIds(next);
+    void syncWorkspaceState({ savedIds: next });
+    pushToast(
+      exists ? 'Removed from Shortlist' : 'Saved to Shortlist',
+      exists
+        ? 'Grant removed from your saved calls.'
+        : currentUser
+        ? 'Grant saved and synced to your Firebase workspace.'
+        : 'Grant added to your saved calls.',
+      'emerald'
+    );
   };
 
   // Subject Category Funding Distribution for Recharts BarChart
@@ -592,6 +888,37 @@ export default function App() {
 
       setOpportunities((prev) => [newOpp, ...prev]);
       setQuickUrlInput('');
+
+      if (currentUser) {
+        const uid = sanitizeValidId(currentUser.uid);
+        const oppId = sanitizeValidId(newOpp.id);
+        const oppPath = `userOpportunities/${oppId}`;
+        try {
+          await setDoc(doc(db, 'userOpportunities', oppId), {
+            ownerId: uid,
+            title: clampString(newOpp.title, 2, 200, 'Surveyed Research Call'),
+            provider: clampString(newOpp.provider, 2, 160, 'Verified Donor Portal'),
+            url: clampString(newOpp.url, 8, 500, 'https://europa.eu'),
+            currency: newOpp.currency,
+            amount: Math.max(0, Math.min(100000000, Number(newOpp.amount) || 40000)),
+            region: clampString(newOpp.region, 2, 40, 'Global'),
+            locationLabel: clampString(newOpp.locationLabel, 2, 100, 'Global Hub'),
+            stage: clampString(newOpp.stage, 2, 40, 'Early Career'),
+            subject: clampString(newOpp.subject, 2, 60, 'Science & Tech'),
+            status: newOpp.status,
+            deadline: clampString(newOpp.deadline, 4, 30, '2026-12-30'),
+            overheadCapPercent: Math.max(0, Math.min(100, newOpp.overheadCapPercent || 12)),
+            lat: Math.max(-90, Math.min(90, newOpp.lat)),
+            lng: Math.max(-180, Math.min(180, newOpp.lng)),
+            notes: clampString(newOpp.notes, 0, 1000, ''),
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.CREATE, oppPath);
+        }
+      }
+
       pushToast(
         'Portal Surveyed Live',
         `Indexed "${newOpp.title}" with 100% official link verification.`,
@@ -605,7 +932,7 @@ export default function App() {
   };
 
   // Handle Manual Submit Opportunity Modal
-  const handleSaveManualOpportunity = (e: React.FormEvent) => {
+  const handleSaveManualOpportunity = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formTitle.trim() || !formProvider.trim() || !formUrl.trim()) return;
 
@@ -622,7 +949,7 @@ export default function App() {
     const coords = regionCoords[formRegion] || regionCoords.Global;
 
     const created: GrantOpportunity = {
-      id: `opp-${Date.now()}`,
+      id: `opp_${Date.now()}`,
       title: formTitle.trim(),
       provider: formProvider.trim(),
       url: formUrl.trim(),
@@ -652,6 +979,37 @@ export default function App() {
     setFormProvider('');
     setFormUrl('');
     setFormNotes('');
+
+    if (currentUser) {
+      const uid = sanitizeValidId(currentUser.uid);
+      const oppId = sanitizeValidId(created.id);
+      const oppPath = `userOpportunities/${oppId}`;
+      try {
+        await setDoc(doc(db, 'userOpportunities', oppId), {
+          ownerId: uid,
+          title: clampString(created.title, 2, 200, 'Submitted Grant Call'),
+          provider: clampString(created.provider, 2, 160, 'Verified Donor Agency'),
+          url: clampString(created.url, 8, 500, 'https://europa.eu'),
+          currency: created.currency,
+          amount: Math.max(0, Math.min(100000000, created.amount)),
+          region: clampString(created.region, 2, 40, 'Global'),
+          locationLabel: clampString(created.locationLabel, 2, 100, 'Global Hub'),
+          stage: clampString(created.stage, 2, 40, 'Early Career'),
+          subject: clampString(created.subject, 2, 60, 'Science & Tech'),
+          status: created.status,
+          deadline: clampString(created.deadline, 4, 30, '2026-12-31'),
+          overheadCapPercent: 12,
+          lat: created.lat,
+          lng: created.lng,
+          notes: clampString(created.notes, 0, 1000, ''),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, oppPath);
+      }
+    }
+
     pushToast('Opportunity Indexed', `"${created.title}" is now live in the hub and spatial map.`, 'emerald');
   };
 
@@ -775,6 +1133,33 @@ export default function App() {
                 <i className="fa-solid fa-circle-check text-xs" />
                 <span>100% Official Links Verified</span>
               </div>
+
+              {/* Firebase Cloud Auth Button */}
+              {currentUser ? (
+                <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
+                  <span className="text-slate-200 font-medium max-w-[110px] truncate">
+                    {currentUser.displayName || currentUser.email}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleGoogleSignOut}
+                    className="text-slate-400 hover:text-white ml-1 text-[11px] underline"
+                  >
+                    Sign Out
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={signingIn}
+                  onClick={handleGoogleSignIn}
+                  className="px-3 py-1.5 rounded-lg bg-slate-950 hover:bg-slate-800 border border-teal-500/40 text-xs font-semibold text-teal-300 transition flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                >
+                  <i className="fa-solid fa-cloud-arrow-up text-[11px]" />
+                  <span>{signingIn ? 'Connecting...' : 'Cloud Sign In'}</span>
+                </button>
+              )}
 
               {/* Multi-Payment Layer Button */}
               <button
@@ -2034,8 +2419,36 @@ export default function App() {
                 </h2>
 
                 <form
-                  onSubmit={(e) => {
+                  onSubmit={async (e) => {
                     e.preventDefault();
+                    if (currentUser) {
+                      const uid = sanitizeValidId(currentUser.uid);
+                      const privPath = `users/${uid}/private/info`;
+                      try {
+                        await updateDoc(doc(db, 'users', uid, 'private', 'info'), {
+                          email: clampString(
+                            currentUser.email || subscriberEmail,
+                            3,
+                            254,
+                            'researcher@university.edu'
+                          ),
+                          subscriberEmail: clampString(
+                            subscriberEmail,
+                            3,
+                            254,
+                            'researcher@university.edu'
+                          ),
+                          updatedAt: serverTimestamp(),
+                        });
+                      } catch (err) {
+                        handleFirestoreError(err, OperationType.UPDATE, privPath);
+                      }
+                      await syncWorkspaceState({
+                        digestCadence,
+                        digestRegion,
+                        digestSubject,
+                      });
+                    }
                     pushToast(
                       'Alert Preferences Saved',
                       `Configured ${digestCadence} spatial grant digests for ${subscriberEmail}.`,
@@ -2729,25 +3142,25 @@ export default function App() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={async () => {
                       const now = new Date().toLocaleTimeString([], {
                         hour: '2-digit',
                         minute: '2-digit',
                       });
 
+                      let receiptPlanLabel = 'All-Access Pro Tier';
+                      let receiptAmountLabel = '$15.00';
+
                       if (selectedPlan === 'pro_monthly') {
                         setProUnlocked(true);
                         setUnlockedPasses({ csvAndAnalytics: true, complianceCredits: 999 });
-                        setPaymentReceipts((prev) => [
-                          {
-                            id: `rcpt-${Date.now()}`,
-                            planLabel: 'All-Access Pro Tier',
-                            amountLabel: '$15.00',
-                            method: selectedPaymentMethod,
-                            timestamp: now,
-                          },
-                          ...prev,
-                        ]);
+                        receiptPlanLabel = 'All-Access Pro Tier';
+                        receiptAmountLabel = '$15.00';
+                        void syncWorkspaceState({
+                          proUnlocked: true,
+                          csvAndAnalyticsUnlocked: true,
+                          complianceCredits: 999,
+                        });
                         pushToast(
                           'All-Access Pro Activated',
                           `Verified $15.00/mo via ${selectedPaymentMethod}. All exports, analytics, audits & blueprints unlocked.`,
@@ -2755,36 +3168,23 @@ export default function App() {
                         );
                       } else if (selectedPlan === 'csv_pass') {
                         setUnlockedPasses((prev) => ({ ...prev, csvAndAnalytics: true }));
-                        setPaymentReceipts((prev) => [
-                          {
-                            id: `rcpt-${Date.now()}`,
-                            planLabel: 'CSV & Analytics Pass',
-                            amountLabel: '$3.00',
-                            method: selectedPaymentMethod,
-                            timestamp: now,
-                          },
-                          ...prev,
-                        ]);
+                        receiptPlanLabel = 'CSV & Analytics Pass';
+                        receiptAmountLabel = '$3.00';
+                        void syncWorkspaceState({ csvAndAnalyticsUnlocked: true });
                         pushToast(
                           'CSV & Analytics Pass Unlocked',
                           `Verified $3.00 via ${selectedPaymentMethod}. CSV downloads & Pro chart benchmarks enabled.`,
                           'emerald'
                         );
                       } else if (selectedPlan === 'audit_pass') {
+                        const nextCredits = unlockedPasses.complianceCredits + 1;
                         setUnlockedPasses((prev) => ({
                           ...prev,
-                          complianceCredits: prev.complianceCredits + 1,
+                          complianceCredits: nextCredits,
                         }));
-                        setPaymentReceipts((prev) => [
-                          {
-                            id: `rcpt-${Date.now()}`,
-                            planLabel: 'Single Rubric Audit Pass',
-                            amountLabel: '$5.00',
-                            method: selectedPaymentMethod,
-                            timestamp: now,
-                          },
-                          ...prev,
-                        ]);
+                        receiptPlanLabel = 'Single Rubric Audit Pass';
+                        receiptAmountLabel = '$5.00';
+                        void syncWorkspaceState({ complianceCredits: nextCredits });
                         pushToast(
                           'Rubric Audit Pass Added',
                           `Verified $5.00 via ${selectedPaymentMethod}. 1 Non-Generative Compliance Audit credit added.`,
@@ -2792,19 +3192,13 @@ export default function App() {
                         );
                       } else if (selectedPlan === 'blueprint_pass') {
                         const targetBpId = pendingBlueprintId || 'guide-2';
-                        setUnlockedBlueprints((prev) =>
-                          prev.includes(targetBpId) ? prev : [...prev, targetBpId]
-                        );
-                        setPaymentReceipts((prev) => [
-                          {
-                            id: `rcpt-${Date.now()}`,
-                            planLabel: 'Single Academy Blueprint',
-                            amountLabel: '$2.00',
-                            method: selectedPaymentMethod,
-                            timestamp: now,
-                          },
-                          ...prev,
-                        ]);
+                        const nextBlueprints = unlockedBlueprints.includes(targetBpId)
+                          ? unlockedBlueprints
+                          : [...unlockedBlueprints, targetBpId].slice(0, 20);
+                        setUnlockedBlueprints(nextBlueprints);
+                        receiptPlanLabel = 'Single Academy Blueprint';
+                        receiptAmountLabel = '$2.00';
+                        void syncWorkspaceState({ unlockedBlueprints: nextBlueprints });
                         const foundBp = ACADEMY_BLUEPRINTS.find((b) => b.id === targetBpId);
                         if (foundBp) {
                           setActiveBlueprint(foundBp);
@@ -2814,6 +3208,35 @@ export default function App() {
                           `Verified $2.00 via ${selectedPaymentMethod}.`,
                           'emerald'
                         );
+                      }
+
+                      const newReceiptId = `rcpt_${Date.now()}`;
+                      setPaymentReceipts((prev) => [
+                        {
+                          id: newReceiptId,
+                          planLabel: receiptPlanLabel,
+                          amountLabel: receiptAmountLabel,
+                          method: selectedPaymentMethod,
+                          timestamp: now,
+                        },
+                        ...prev,
+                      ]);
+
+                      if (currentUser) {
+                        const uid = sanitizeValidId(currentUser.uid);
+                        const rcptPath = `paymentReceipts/${newReceiptId}`;
+                        try {
+                          await setDoc(doc(db, 'paymentReceipts', newReceiptId), {
+                            ownerId: uid,
+                            planLabel: clampString(receiptPlanLabel, 2, 100, 'Pro Tier'),
+                            amountLabel: clampString(receiptAmountLabel, 2, 30, '$15.00'),
+                            method: selectedPaymentMethod,
+                            timestamp: clampString(now, 1, 40, 'Now'),
+                            createdAt: serverTimestamp(),
+                          });
+                        } catch (err) {
+                          handleFirestoreError(err, OperationType.CREATE, rcptPath);
+                        }
                       }
 
                       setPaymentModalOpen(false);

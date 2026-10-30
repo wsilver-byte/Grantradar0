@@ -1,0 +1,407 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation Blueprint 1: UserWorkspace (/users/{userId})
+    function isValidUserWorkspace(data, userId) {
+      return data.keys().hasAll([
+          'ownerId',
+          'displayName',
+          'proUnlocked',
+          'csvAndAnalyticsUnlocked',
+          'complianceCredits',
+          'savedIds',
+          'unlockedBlueprints',
+          'digestCadence',
+          'digestRegion',
+          'digestSubject',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'displayName',
+          'proUnlocked',
+          'csvAndAnalyticsUnlocked',
+          'complianceCredits',
+          'savedIds',
+          'unlockedBlueprints',
+          'digestCadence',
+          'digestRegion',
+          'digestSubject',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.ownerId is string
+        && data.ownerId == request.auth.uid
+        && data.ownerId == userId
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 120
+        && data.proUnlocked is bool
+        && data.csvAndAnalyticsUnlocked is bool
+        && data.complianceCredits is number
+        && data.complianceCredits >= 0
+        && data.complianceCredits <= 10000
+        && data.savedIds is list
+        && data.savedIds.size() <= 50
+        && (data.savedIds.size() == 0 || (data.savedIds[0] is string && data.savedIds[0].size() <= 128))
+        && data.unlockedBlueprints is list
+        && data.unlockedBlueprints.size() <= 20
+        && (data.unlockedBlueprints.size() == 0 || (data.unlockedBlueprints[0] is string && data.unlockedBlueprints[0].size() <= 128))
+        && data.digestCadence is string
+        && data.digestCadence.size() <= 20
+        && data.digestCadence in ['Weekly', 'Bi-Weekly', 'Urgent-Only']
+        && data.digestRegion is string
+        && data.digestRegion.size() >= 1
+        && data.digestRegion.size() <= 40
+        && data.digestSubject is string
+        && data.digestSubject.size() >= 1
+        && data.digestSubject.size() <= 60
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint 2: UserPrivateInfo (/users/{userId}/private/{docId})
+    function isValidUserPrivateInfo(data, userId) {
+      return data.keys().hasAll([
+          'ownerId',
+          'email',
+          'subscriberEmail',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'email',
+          'subscriberEmail',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.ownerId is string
+        && data.ownerId == request.auth.uid
+        && data.ownerId == userId
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.email is string
+        && data.email.size() >= 3
+        && data.email.size() <= 254
+        && data.subscriberEmail is string
+        && data.subscriberEmail.size() >= 3
+        && data.subscriberEmail.size() <= 254
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint 3: UserOpportunity (/userOpportunities/{opportunityId})
+    function isValidUserOpportunity(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'title',
+          'provider',
+          'url',
+          'currency',
+          'amount',
+          'region',
+          'locationLabel',
+          'stage',
+          'subject',
+          'status',
+          'deadline',
+          'overheadCapPercent',
+          'lat',
+          'lng',
+          'notes',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'title',
+          'provider',
+          'url',
+          'currency',
+          'amount',
+          'region',
+          'locationLabel',
+          'stage',
+          'subject',
+          'status',
+          'deadline',
+          'overheadCapPercent',
+          'lat',
+          'lng',
+          'notes',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.ownerId is string
+        && data.ownerId == request.auth.uid
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.title is string
+        && data.title.size() >= 2
+        && data.title.size() <= 200
+        && data.provider is string
+        && data.provider.size() >= 2
+        && data.provider.size() <= 160
+        && data.url is string
+        && data.url.size() >= 8
+        && data.url.size() <= 500
+        && data.currency is string
+        && data.currency.size() <= 10
+        && data.currency in ['USD', 'EUR', 'GBP']
+        && data.amount is number
+        && data.amount >= 0
+        && data.amount <= 100000000
+        && data.region is string
+        && data.region.size() >= 2
+        && data.region.size() <= 40
+        && data.locationLabel is string
+        && data.locationLabel.size() >= 2
+        && data.locationLabel.size() <= 100
+        && data.stage is string
+        && data.stage.size() >= 2
+        && data.stage.size() <= 40
+        && data.subject is string
+        && data.subject.size() >= 2
+        && data.subject.size() <= 60
+        && data.status is string
+        && data.status.size() <= 20
+        && data.status in ['Open', 'Closing Soon', 'Expired']
+        && data.deadline is string
+        && data.deadline.size() >= 4
+        && data.deadline.size() <= 30
+        && data.overheadCapPercent is number
+        && data.overheadCapPercent >= 0
+        && data.overheadCapPercent <= 100
+        && data.lat is number
+        && data.lat >= -90
+        && data.lat <= 90
+        && data.lng is number
+        && data.lng >= -180
+        && data.lng <= 180
+        && data.notes is string
+        && data.notes.size() <= 1000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint 4: PaymentReceiptRecord (/paymentReceipts/{receiptId})
+    function isValidPaymentReceipt(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'planLabel',
+          'amountLabel',
+          'method',
+          'timestamp',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'planLabel',
+          'amountLabel',
+          'method',
+          'timestamp',
+          'createdAt'
+        ])
+        && data.ownerId is string
+        && data.ownerId == request.auth.uid
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.planLabel is string
+        && data.planLabel.size() >= 2
+        && data.planLabel.size() <= 100
+        && data.amountLabel is string
+        && data.amountLabel.size() >= 2
+        && data.amountLabel.size() <= 30
+        && data.method is string
+        && data.method.size() <= 20
+        && data.method in ['Payoneer', 'Card', 'USDC']
+        && data.timestamp is string
+        && data.timestamp.size() >= 1
+        && data.timestamp.size() <= 40
+        && data.createdAt is timestamp;
+    }
+
+    // Collection 1: /users/{userId}
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+
+      allow create: if isVerifiedUser()
+        && isOwner(userId)
+        && isValidId(userId)
+        && isValidUserWorkspace(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isOwner(userId)
+        && isValidId(userId)
+        && isValidUserWorkspace(incoming(), userId)
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Update Shortlist & Blueprints & Tier Unlocks & Digest Preferences
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'displayName',
+            'proUnlocked',
+            'csvAndAnalyticsUnlocked',
+            'complianceCredits',
+            'savedIds',
+            'unlockedBlueprints',
+            'digestCadence',
+            'digestRegion',
+            'digestSubject',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if false;
+
+      // Subcollection: /users/{userId}/private/{docId} (Split Collection Strategy for PII)
+      match /private/{docId} {
+        allow get: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(docId)
+          && get(/databases/$(database)/documents/users/$(userId)).data.ownerId == request.auth.uid;
+
+        allow list: if false;
+
+        allow create: if isVerifiedUser()
+          && isOwner(userId)
+          && isValidId(userId)
+          && isValidId(docId)
+          && isValidUserPrivateInfo(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && get(/databases/$(database)/documents/users/$(userId)).data.ownerId == request.auth.uid;
+
+        allow update: if isVerifiedUser()
+          && isOwner(userId)
+          && isValidId(userId)
+          && isValidId(docId)
+          && isValidUserPrivateInfo(incoming(), userId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'email',
+            'subscriberEmail',
+            'updatedAt'
+          ])
+          && get(/databases/$(database)/documents/users/$(userId)).data.ownerId == request.auth.uid;
+
+        allow delete: if false;
+      }
+    }
+
+    // Collection 2: /userOpportunities/{opportunityId}
+    match /userOpportunities/{opportunityId} {
+      allow get: if isSignedIn()
+        && isValidId(opportunityId)
+        && existing().ownerId == request.auth.uid;
+
+      allow list: if isSignedIn()
+        && existing().ownerId == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(opportunityId)
+        && isValidUserOpportunity(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.ownerId == request.auth.uid;
+
+      allow update: if isVerifiedUser()
+        && isValidId(opportunityId)
+        && isValidUserOpportunity(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && existing().status != 'Expired'
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'title',
+            'provider',
+            'url',
+            'currency',
+            'amount',
+            'region',
+            'locationLabel',
+            'stage',
+            'subject',
+            'status',
+            'deadline',
+            'overheadCapPercent',
+            'lat',
+            'lng',
+            'notes',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if isVerifiedUser()
+        && isValidId(opportunityId)
+        && existing().ownerId == request.auth.uid;
+    }
+
+    // Collection 3: /paymentReceipts/{receiptId}
+    match /paymentReceipts/{receiptId} {
+      allow get: if isSignedIn()
+        && isValidId(receiptId)
+        && existing().ownerId == request.auth.uid;
+
+      allow list: if isSignedIn()
+        && existing().ownerId == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(receiptId)
+        && isValidPaymentReceipt(incoming())
+        && incoming().createdAt == request.time
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.ownerId == request.auth.uid;
+
+      allow update, delete: if false;
+    }
+  }
+}
