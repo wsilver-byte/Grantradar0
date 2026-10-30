@@ -1,0 +1,6 @@
+{
+  "name": "Grant Surveyor AI",
+  "description": "Global funding intelligence, spatial grant mapping, verified source portal radar, and non-generative AI proposal compliance auditing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
